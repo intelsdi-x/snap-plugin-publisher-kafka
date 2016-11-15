@@ -31,14 +31,13 @@ import (
 	"github.com/intelsdi-x/snap/control/plugin"
 	"github.com/intelsdi-x/snap/control/plugin/cpolicy"
 	"github.com/intelsdi-x/snap/core/ctypes"
-
 	"gopkg.in/Shopify/sarama.v1"
 )
 
 const (
-	PluginName    = "kafka"
-	PluginVersion = 9
-	PluginType    = plugin.PublisherPluginType
+	PluginName = "kafka"
+	PluginVersion = 10
+	PluginType = plugin.PublisherPluginType
 )
 
 func Meta() *plugin.PluginMeta {
@@ -53,12 +52,12 @@ func NewKafkaPublisher() *kafkaPublisher {
 
 type MetricToPublish struct {
 	// The timestamp from when the metric was created.
-	Timestamp time.Time         `json:"timestamp"`
-	Namespace string            `json:"namespace"`
-	Data      interface{}       `json:"data"`
-	Unit      string            `json:"unit"`
-	Tags      map[string]string `json:"tags"`
-	Version_  int               `json:"version"`
+	Timestamp          time.Time         `json:"timestamp"`
+	Namespace          string            `json:"namespace"`
+	Data               interface{}       `json:"data"`
+	Unit               string            `json:"unit"`
+	Tags               map[string]string `json:"tags"`
+	Version_           int               `json:"version"`
 	// Last advertised time is the last time the snap agent was told about a metric.
 	LastAdvertisedTime time.Time `json:"last_advertised_time"`
 }
@@ -78,18 +77,57 @@ func (k *kafkaPublisher) Publish(contentType string, content []byte, config map[
 	default:
 		return fmt.Errorf("Unknown content type '%s'", contentType)
 	}
+
+	topic := config["topic"].(ctypes.ConfigValueStr).Value
+	brokers := parseBrokerString(config["brokers"].(ctypes.ConfigValueStr).Value)
 	// format metrics types to metrics to be published
 	metrics := formatMetricTypes(mts)
 
-	jsonOut, err := json.Marshal(metrics)
+	var outputType string
+	var key string
+	var jsonOut []byte
+	var err error
+	//valid values = array, tree. set default to array, if not defined
+	if value, ok := config["output_type"]; ok {
+		outputType = value.(ctypes.ConfigValueStr).Value
+	} else {
+		outputType = "array"
+	}
+
+	//valid values: _none, tag name - e.g. plugin_running_on
+	//don't fail if tag is not found, fallback to random partitioning
+	if value, ok := config["key"]; ok {
+		keyTag := value.(ctypes.ConfigValueStr).Value
+		if len(metrics) > 0 {
+			key = metrics[0].Tags[keyTag]
+		}
+
+	}
+
+	switch outputType {
+	case "array":
+		jsonOut, err = json.Marshal(metrics)
+	case "tree":
+		if (len(metrics) > 0) {
+			var timestamp interface{} = metrics[0].Timestamp.UnixNano()
+			var tags interface{} = metrics[0].Tags
+			i2 := makeTree(metrics).(map[string]*interface{});
+			i2 ["_timestamp"] = &timestamp
+			i2 ["_tags"] = &tags
+			jsonOut, err = json.Marshal(i2)
+		} else {
+			jsonOut,err = json.Marshal(make(map[string]string))
+		}
+
+	default:
+		return fmt.Errorf("Unknow format")
+	}
+
 	if err != nil {
 		return fmt.Errorf("Cannot marshal metrics to JSON format, err=%v", err)
 	}
 
-	topic := config["topic"].(ctypes.ConfigValueStr).Value
-	brokers := parseBrokerString(config["brokers"].(ctypes.ConfigValueStr).Value)
-
-	return k.publish(topic, brokers, []byte(jsonOut))
+	return k.publish(topic, brokers, []byte(jsonOut), key)
 }
 
 func (k *kafkaPublisher) GetConfigPolicy() (*cpolicy.ConfigPolicy, error) {
@@ -110,7 +148,7 @@ func (k *kafkaPublisher) GetConfigPolicy() (*cpolicy.ConfigPolicy, error) {
 }
 
 // Internal method after data has been converted to serialized bytes to send
-func (k *kafkaPublisher) publish(topic string, brokers []string, content []byte) error {
+func (k *kafkaPublisher) publish(topic string, brokers []string, content []byte, key string) error {
 	producer, err := sarama.NewSyncProducer(brokers, nil)
 	if err != nil {
 		return fmt.Errorf("Cannot initialize a new Sarama SyncProducer using the given broker addresses (%v), err=%v", brokers, err)
@@ -121,12 +159,45 @@ func (k *kafkaPublisher) publish(topic string, brokers []string, content []byte)
 			panic(err)
 		}
 	}()
+	if (key == "") {
+		_, _, err = producer.SendMessage(&sarama.ProducerMessage{
+			Topic: topic,
+			Value: sarama.ByteEncoder(content),
+		})
+		return err
+	} else {
+		_, _, err = producer.SendMessage(&sarama.ProducerMessage{
+			Topic: topic,
+			Value: sarama.ByteEncoder(content),
+			Key: sarama.ByteEncoder(key),
+		})
+		return err
+	}
 
-	_, _, err = producer.SendMessage(&sarama.ProducerMessage{
-		Topic: topic,
-		Value: sarama.ByteEncoder(content),
-	})
-	return err
+}
+
+func makeTree(metrics [] MetricToPublish) interface{} {
+	var out interface{} = make(map[string]*interface{})
+	for _, v := range metrics {
+		s := strings.Split(v.Namespace, "/")[1:]
+		putData(&out, s, &v.Data)
+	}
+	return out;
+}
+
+func putData(i1 *interface{}, path []string, data *interface{}) {
+	i2 := (*i1).(map[string]*interface{});
+	if len(path) == 1 {
+		i2[path[0]] = data
+	} else {
+		if value, ok := i2[path[0]]; ok {
+			putData(value, path[1:], data)
+		} else {
+			var nMap interface{} = make(map[string]*interface{})
+			i2[path[0]] = &nMap
+			putData(i2[path[0]], path[1:], data)
+		}
+	}
 }
 
 // formatMetricTypes returns metrics in format to be publish as a JSON based on incoming metrics types;
@@ -159,3 +230,4 @@ func handleErr(e error) {
 		panic(e)
 	}
 }
+
