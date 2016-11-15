@@ -180,15 +180,15 @@ func makeTree(metrics []MetricToPublish) interface{} {
 	var out interface{} = make(map[string]*interface{})
 	for _, v := range metrics {
 		s := strings.Split(v.Namespace, "/")[1:]
-		putData(&out, s, &v.Data)
+		putData(&out, s, v.Data)
 	}
 	return out
 }
 
-func putData(i1 *interface{}, path []string, data *interface{}) {
+func putData(i1 *interface{}, path []string, data interface{}) {
 	i2 := (*i1).(map[string]*interface{})
 	if len(path) == 1 {
-		i2[path[0]] = data
+		i2[path[0]] = &data
 	} else {
 		if value, ok := i2[path[0]]; ok {
 			putData(value, path[1:], data)
