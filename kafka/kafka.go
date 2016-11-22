@@ -32,6 +32,7 @@ import (
 	"github.com/intelsdi-x/snap/control/plugin/cpolicy"
 	"github.com/intelsdi-x/snap/core/ctypes"
 	"gopkg.in/Shopify/sarama.v1"
+	"reflect"
 )
 
 const (
@@ -191,7 +192,15 @@ func putData(i1 *interface{}, path []string, data interface{}) {
 		i2[path[0]] = &data
 	} else {
 		if value, ok := i2[path[0]]; ok {
-			putData(value, path[1:], data)
+			if reflect.ValueOf(*value).Kind() == reflect.Map {
+				putData(value, path[1:], data)
+			} else {
+				m := make(map[string]*interface{})
+				m["__value"] = value
+				var nMap interface{} = m
+				i2[path[0]] = &nMap
+				putData(i2[path[0]], path[1:], data)
+			}
 		} else {
 			var nMap interface{} = make(map[string]*interface{})
 			i2[path[0]] = &nMap
