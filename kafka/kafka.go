@@ -33,6 +33,7 @@ import (
 	"github.com/intelsdi-x/snap/control/plugin/cpolicy"
 	"github.com/intelsdi-x/snap/core/ctypes"
 	"gopkg.in/Shopify/sarama.v1"
+	"math"
 )
 
 const (
@@ -214,15 +215,36 @@ func putData(i1 *interface{}, path []string, data interface{}) {
 func formatMetricTypes(mts []plugin.MetricType) []MetricToPublish {
 	var metrics []MetricToPublish
 	for _, mt := range mts {
-		metrics = append(metrics, MetricToPublish{
-			Timestamp:          mt.Timestamp(),
-			Namespace:          mt.Namespace().String(),
-			Data:               mt.Data(),
-			Unit:               mt.Unit(),
-			Tags:               mt.Tags(),
-			Version_:           mt.Version(),
-			LastAdvertisedTime: mt.LastAdvertisedTime(),
-		})
+		switch mt.Data().(type) {
+		case float64:
+			val := mt.Data().(float64)
+			if !math.IsNaN(val) {
+				metrics = append(metrics, MetricToPublish{
+					Timestamp:          mt.Timestamp(),
+					Namespace:          mt.Namespace().String(),
+					Data:               mt.Data(),
+					Unit:               mt.Unit(),
+					Tags:               mt.Tags(),
+					Version_:           mt.Version(),
+					LastAdvertisedTime: mt.LastAdvertisedTime(),
+				})
+			}
+		default:
+			metrics = append(metrics, MetricToPublish{
+				Timestamp:          mt.Timestamp(),
+				Namespace:          mt.Namespace().String(),
+				Data:               mt.Data(),
+				Unit:               mt.Unit(),
+				Tags:               mt.Tags(),
+				Version_:           mt.Version(),
+				LastAdvertisedTime: mt.LastAdvertisedTime(),
+			})
+		}
+		/*
+			if reflect.TypeOf(mt.Data).Kind() != reflect.Float64 || !math.IsNaN(mt.Data.(float64)) {
+
+			}
+		*/
 	}
 	return metrics
 }
