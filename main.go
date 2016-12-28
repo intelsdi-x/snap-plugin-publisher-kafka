@@ -20,22 +20,12 @@ limitations under the License.
 package main
 
 import (
-	"os"
-
 	// Import the snap plugin library
+	"github.com/intelsdi-x/snap-plugin-lib-go/v1/plugin"
 	"github.com/intelsdi-x/snap-plugin-publisher-kafka/kafka"
-	"github.com/intelsdi-x/snap/control/plugin"
 )
 
 func main() {
-	// Three things provided:
-	//   the definition of the plugin metadata
-	//   the implementation satfiying plugin.CollectorPlugin
-	//   the collector configuration policy satifying plugin.ConfigRules
-
-	// Define metadata about Plugin
-	meta := kafka.Meta()
-
 	// Start a collector
-	plugin.Start(meta, kafka.NewKafkaPublisher(), os.Args[1])
+	plugin.StartPublisher(kafka.KafkaPublisher{}, kafka.PluginName, kafka.PluginVersion, plugin.Exclusive(true))
 }
