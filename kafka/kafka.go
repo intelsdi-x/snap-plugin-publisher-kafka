@@ -59,6 +59,10 @@ type MetricToPublish struct {
 //Publish(mts []plugin.Metric, cfg plugin.Config) error
 //func (k *kafkaPublisher) Publish(contentType string, content []byte, config map[string]ctypes.ConfigValue) error {
 func (k KafkaPublisher) Publish(mts []plugin.Metric, cfg plugin.Config) error {
+	//no data - no output
+	if len(mts) == 0 {
+		return nil
+	}
 	var jsonOut []byte
 
 	topic, err := cfg.GetString("topic")
@@ -183,7 +187,7 @@ func (k *KafkaPublisher) publish(topic string, brokers []string, content []byte,
 func makeTree(metrics []MetricToPublish) interface{} {
 	var out interface{} = make(map[string]*interface{})
 	for _, v := range metrics {
-		s := strings.Split(v.Namespace, "/")[1:]
+		s := strings.Split(v.Namespace, "/")
 		putData(&out, s, v.Data)
 	}
 	return out
@@ -192,7 +196,15 @@ func makeTree(metrics []MetricToPublish) interface{} {
 func putData(i1 *interface{}, path []string, data interface{}) {
 	i2 := (*i1).(map[string]*interface{})
 	if len(path) == 1 {
-		i2[path[0]] = &data
+		//collision test
+		if value, ok := i2[path[0]]; ok {
+			if reflect.ValueOf(*value).Kind() == reflect.Map {
+				i3 := (*value).(map[string]*interface{})
+				i3["__value"] = &data
+			}
+		} else {
+			i2[path[0]] = &data
+		}
 	} else {
 		if value, ok := i2[path[0]]; ok {
 			if reflect.ValueOf(*value).Kind() == reflect.Map {
