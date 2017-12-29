@@ -58,6 +58,8 @@ In task manifest, in config section of Kafka publisher the following settings ca
 | topic   | string     | "snap"            | The topic to send messages |
 | brokers | string     | "localhost:9092"  | Semicolon delimited list of "server:port" brokers </br> Kafka's standard broker communication port is 9092 |
 
+
+**Notice** To publish to remote Kafka endpoint, please ensure that all listed brokers are available from the host where snap-plugin-publisher-kafka is running. You can simply check it by running `telnet` providing address and port where Kafka advertised broker is running, for example `telnet 123.45.67.89 9092`.
 ## Documentation
 
 ### Kafka Quickstart
