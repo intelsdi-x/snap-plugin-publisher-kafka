@@ -20,36 +20,28 @@ limitations under the License.
 package kafka
 
 import (
-	"bytes"
-	"encoding/gob"
 	"encoding/json"
 	"fmt"
-	"os"
+	"math"
+	"reflect"
 	"strings"
 	"time"
 
-	"github.com/intelsdi-x/snap/control/plugin"
-	"github.com/intelsdi-x/snap/control/plugin/cpolicy"
-	"github.com/intelsdi-x/snap/core/ctypes"
-
+	"github.com/intelsdi-x/snap-plugin-lib-go/v1/plugin"
 	"gopkg.in/Shopify/sarama.v1"
 )
 
 const (
 	PluginName    = "kafka"
-	PluginVersion = 9
-	PluginType    = plugin.PublisherPluginType
+	PluginVersion = 10
+	//	PluginType    = plugin.PublisherPluginType
 )
 
-func Meta() *plugin.PluginMeta {
+/*func Meta() *plugin.PluginMeta {
 	return plugin.NewPluginMeta(PluginName, PluginVersion, PluginType, []string{plugin.SnapGOBContentType}, []string{plugin.SnapGOBContentType})
-}
+}*/
 
-type kafkaPublisher struct{}
-
-func NewKafkaPublisher() *kafkaPublisher {
-	return &kafkaPublisher{}
-}
+type KafkaPublisher struct{}
 
 type MetricToPublish struct {
 	// The timestamp from when the metric was created.
@@ -58,59 +50,113 @@ type MetricToPublish struct {
 	Data      interface{}       `json:"data"`
 	Unit      string            `json:"unit"`
 	Tags      map[string]string `json:"tags"`
-	Version_  int               `json:"version"`
+	Version_  int64             `json:"version"`
 	// Last advertised time is the last time the snap agent was told about a metric.
-	LastAdvertisedTime time.Time `json:"last_advertised_time"`
+	//	LastAdvertisedTime time.Time `json:"last_advertised_time"`
 }
 
 // Publish sends data to a Kafka server
-func (k *kafkaPublisher) Publish(contentType string, content []byte, config map[string]ctypes.ConfigValue) error {
-	var mts []plugin.MetricType
-
-	switch contentType {
-	case plugin.SnapGOBContentType:
-		dec := gob.NewDecoder(bytes.NewBuffer(content))
-		// decode incoming metrics types
-		if err := dec.Decode(&mts); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: invalid incoming content: %v, err=%v", content, err)
-			return fmt.Errorf("Cannot decode incoming content, err=%v", err)
-		}
-	default:
-		return fmt.Errorf("Unknown content type '%s'", contentType)
+//Publish(mts []plugin.Metric, cfg plugin.Config) error
+//func (k *kafkaPublisher) Publish(contentType string, content []byte, config map[string]ctypes.ConfigValue) error {
+func (k KafkaPublisher) Publish(mts []plugin.Metric, cfg plugin.Config) error {
+	//no data - no output
+	if len(mts) == 0 {
+		return nil
 	}
+	var jsonOut []byte
+
+	topic, err := cfg.GetString("topic")
+	if err != nil {
+		return err
+	}
+	b, err := cfg.GetString("brokers")
+	if err != nil {
+		return err
+	}
+	brokers := parseBrokerString(b)
+
+	outputType, err := cfg.GetString("output_type")
+	if err != nil {
+		return err
+	}
+	keyTag, err := cfg.GetString("key")
+	if err != nil {
+		return err
+	}
+	key := mts[0].Tags[keyTag]
+	/*; ok {
+		outputType = value.(ctypes.ConfigValueStr).Value
+	} else {
+		outputType = "array"
+	}*/
 	// format metrics types to metrics to be published
 	metrics := formatMetricTypes(mts)
+	//valid values: _none, tag name - e.g. plugin_running_on
+	//don't fail if tag is not found, fallback to random partitioning
+	/*
+		if value, ok := cfg["key"]; ok {
+			keyTag := value.(ctypes.ConfigValueStr).Value
+			if len(metrics) > 0 {
+				key = metrics[0].Tags[keyTag]
+			}
 
-	jsonOut, err := json.Marshal(metrics)
+		}
+	*/
+
+	switch outputType {
+	case "array":
+		jsonOut, err = json.Marshal(metrics)
+	case "tree":
+		if len(metrics) > 0 {
+			var timestamp interface{} = metrics[0].Timestamp.UnixNano()
+			var tags interface{} = metrics[0].Tags
+			i2 := makeTree(metrics).(map[string]*interface{})
+			i2["_timestamp"] = &timestamp
+			i2["_tags"] = &tags
+			jsonOut, err = json.Marshal(i2)
+		} else {
+			jsonOut, err = json.Marshal(make(map[string]string))
+		}
+
+	default:
+		return fmt.Errorf("Unknow format")
+	}
+
 	if err != nil {
 		return fmt.Errorf("Cannot marshal metrics to JSON format, err=%v", err)
 	}
 
-	topic := config["topic"].(ctypes.ConfigValueStr).Value
-	brokers := parseBrokerString(config["brokers"].(ctypes.ConfigValueStr).Value)
-
-	return k.publish(topic, brokers, []byte(jsonOut))
+	return k.publish(topic, brokers, []byte(jsonOut), key)
 }
 
-func (k *kafkaPublisher) GetConfigPolicy() (*cpolicy.ConfigPolicy, error) {
-	cp := cpolicy.New()
-	config := cpolicy.NewPolicyNode()
+func (k KafkaPublisher) GetConfigPolicy() (plugin.ConfigPolicy, error) {
+	var ns []string
+	policy := plugin.NewConfigPolicy()
+	policy.AddNewStringRule(ns, "topic", false, plugin.SetDefaultString("snap"))
+	policy.AddNewStringRule(ns, "brokers", false, plugin.SetDefaultString("localhost:9092"))
+	policy.AddNewStringRule(ns, "output_type", false, plugin.SetDefaultString("tree"))
+	policy.AddNewStringRule(ns, "key", false, plugin.SetDefaultString("plugin_running_on"))
 
-	r1, err := cpolicy.NewStringRule("topic", false, "snap")
-	handleErr(err)
-	r1.Description = "Kafka topic for publishing"
+	/*
+		config := cpolicy.NewPolicyNode()
 
-	r2, _ := cpolicy.NewStringRule("brokers", false, "localhost:9092")
-	handleErr(err)
-	r2.Description = "List of brokers separated by semicolon in the format: <broker-ip:port;broker-ip:port> (ex: \"192.168.1.1:9092;172.16.9.99:9092\")"
+		r1, err := cpolicy.NewStringRule("topic", false, "snap")
+		handleErr(err)
+		r1.Description = "Kafka topic for publishing"
 
-	config.Add(r1, r2)
-	cp.Add([]string{""}, config)
-	return cp, nil
+		r2, _ := cpolicy.NewStringRule("brokers", false, "localhost:9092")
+		handleErr(err)
+		r2.Description = "List of brokers separated by semicolon in the format: <broker-ip:port;broker-ip:port> (ex: \"192.168.1.1:9092;172.16.9.99:9092\")"
+
+		config.Add(r1, r2)
+		cp.Add([]string{""}, config)
+	*/
+	return *policy, nil
+
 }
 
 // Internal method after data has been converted to serialized bytes to send
-func (k *kafkaPublisher) publish(topic string, brokers []string, content []byte) error {
+func (k *KafkaPublisher) publish(topic string, brokers []string, content []byte, key string) error {
 	producer, err := sarama.NewSyncProducer(brokers, nil)
 	if err != nil {
 		return fmt.Errorf("Cannot initialize a new Sarama SyncProducer using the given broker addresses (%v), err=%v", brokers, err)
@@ -121,28 +167,96 @@ func (k *kafkaPublisher) publish(topic string, brokers []string, content []byte)
 			panic(err)
 		}
 	}()
+	if key == "" {
+		_, _, err = producer.SendMessage(&sarama.ProducerMessage{
+			Topic: topic,
+			Value: sarama.ByteEncoder(content),
+		})
+		return err
+	} else {
+		_, _, err = producer.SendMessage(&sarama.ProducerMessage{
+			Topic: topic,
+			Value: sarama.ByteEncoder(content),
+			Key:   sarama.ByteEncoder(key),
+		})
+		return err
+	}
 
-	_, _, err = producer.SendMessage(&sarama.ProducerMessage{
-		Topic: topic,
-		Value: sarama.ByteEncoder(content),
-	})
-	return err
+}
+
+func makeTree(metrics []MetricToPublish) interface{} {
+	var out interface{} = make(map[string]*interface{})
+	for _, v := range metrics {
+		s := strings.Split(v.Namespace, "/")
+		putData(&out, s, v.Data)
+	}
+	return out
+}
+
+func putData(i1 *interface{}, path []string, data interface{}) {
+	i2 := (*i1).(map[string]*interface{})
+	if len(path) == 1 {
+		//collision test
+		if value, ok := i2[path[0]]; ok {
+			if reflect.ValueOf(*value).Kind() == reflect.Map {
+				i3 := (*value).(map[string]*interface{})
+				i3["__value"] = &data
+			}
+		} else {
+			i2[path[0]] = &data
+		}
+	} else {
+		if value, ok := i2[path[0]]; ok {
+			if reflect.ValueOf(*value).Kind() == reflect.Map {
+				putData(value, path[1:], data)
+			} else {
+				m := make(map[string]*interface{})
+				m["__value"] = value
+				var nMap interface{} = m
+				i2[path[0]] = &nMap
+				putData(i2[path[0]], path[1:], data)
+			}
+		} else {
+			var nMap interface{} = make(map[string]*interface{})
+			i2[path[0]] = &nMap
+			putData(i2[path[0]], path[1:], data)
+		}
+	}
 }
 
 // formatMetricTypes returns metrics in format to be publish as a JSON based on incoming metrics types;
 // i.a. namespace is formatted as a single string
-func formatMetricTypes(mts []plugin.MetricType) []MetricToPublish {
+func formatMetricTypes(mts []plugin.Metric) []MetricToPublish {
 	var metrics []MetricToPublish
 	for _, mt := range mts {
-		metrics = append(metrics, MetricToPublish{
-			Timestamp:          mt.Timestamp(),
-			Namespace:          mt.Namespace().String(),
-			Data:               mt.Data(),
-			Unit:               mt.Unit(),
-			Tags:               mt.Tags(),
-			Version_:           mt.Version(),
-			LastAdvertisedTime: mt.LastAdvertisedTime(),
-		})
+		switch mt.Data.(type) {
+		case float64:
+			val := mt.Data.(float64)
+			if !math.IsNaN(val) {
+				metrics = append(metrics, MetricToPublish{
+					Timestamp: mt.Timestamp,
+					Namespace: strings.Join(mt.Namespace.Strings(), "/"),
+					Data:      mt.Data,
+					Unit:      mt.Unit,
+					Tags:      mt.Tags,
+					Version_:  mt.Version,
+				})
+			}
+		default:
+			metrics = append(metrics, MetricToPublish{
+				Timestamp: mt.Timestamp,
+				Namespace: strings.Join(mt.Namespace.Strings(), "/"),
+				Data:      mt.Data,
+				Unit:      mt.Unit,
+				Tags:      mt.Tags,
+				Version_:  mt.Version,
+			})
+		}
+		/*
+			if reflect.TypeOf(mt.Data).Kind() != reflect.Float64 || !math.IsNaN(mt.Data.(float64)) {
+
+			}
+		*/
 	}
 	return metrics
 }
